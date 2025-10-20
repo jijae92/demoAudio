@@ -1,182 +1,208 @@
-# To run this code you need to install the following dependencies:
-# pip install google-genai
+#!/usr/bin/env python3
+from __future__ import annotations
 
-import base64
-import mimetypes
+import argparse
+import logging
 import os
-import struct
-from google import genai
-from google.genai import types
+import sys
+from pathlib import Path
+from typing import List, Sequence
+
+from audio_pipeline.chunker import ChunkBuilder, ChunkingConfig, ChunkResult
+from audio_pipeline.metadata import MetadataBuilder
+from audio_pipeline.merger import merge_audio_chunks
+from audio_pipeline.split_text import split_into_sentences
+from audio_pipeline.tts_engine import (
+    GoogleGenAITtsEngine,
+    MockTtsEngine,
+    PollyTtsEngine,
+    TtsEngine,
+)
+
+logger = logging.getLogger(__name__)
 
 
-def save_binary_file(file_name, data):
-    with open(file_name, "wb") as f:
-        f.write(data)
-    print(f"File saved to: {file_name}")
+def parse_args(argv: Sequence[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Multi-chunk TTS synthesis pipeline.")
+    parser.add_argument("--input", required=True, help="Input text or SSML file path.")
+    parser.add_argument("--input-encoding", default="utf-8", help="Encoding used for input file.")
+    parser.add_argument("--max-duration-sec", type=int, default=300, help="Maximum duration per chunk in seconds.")
+    parser.add_argument("--target-duration-sec", type=int, default=180, help="Target duration per chunk in seconds.")
+    parser.add_argument("--silence-gap-ms", type=int, default=300, help="Silence inserted between chunks in milliseconds.")
+    parser.add_argument("--sentence-pause-ms", type=int, default=0, help="Optional pause inserted between sentences within a chunk.")
+    parser.add_argument("--merge-output", default="./output/final_merged.wav", help="Path for merged output audio.")
+    parser.add_argument("--metadata-output", default="./output/metadata.json", help="Path for metadata JSON output.")
+    parser.add_argument("--chunk-dir", default="./output/chunks", help="Directory to store intermediate chunk files.")
+    parser.add_argument("--keep-chunks", action="store_true", help="Keep chunk files after merging.")
+    parser.add_argument("--engine", default="google_genai", help="TTS engine to use (google_genai, polly, mock).")
+    parser.add_argument("--api-key", help="API key for engines that require one (e.g. Google GenAI).")
+    parser.add_argument("--google-model", default="gemini-2.5-pro-preview-tts", help="Google GenAI model name.")
+    parser.add_argument("--voice-id", help="Voice identifier (engine specific).")
+    parser.add_argument("--language-code", help="Language code hint for engine.")
+    parser.add_argument("--sample-rate", type=int, default=22050, help="Expected sample rate for audio segments.")
+    parser.add_argument("--format", default="pcm", help="Underlying engine format (pcm/mp3/ogg_vorbis).")
+    parser.add_argument("--max-retries", type=int, default=5, help="Maximum synthesis retries per sentence.")
+    parser.add_argument("--retry-initial-delay", type=float, default=0.5, help="Initial retry delay in seconds.")
+    parser.add_argument("--retry-backoff", type=float, default=2.0, help="Multiplier for retry backoff.")
+    parser.add_argument("--concurrency", type=int, default=1, help="Reserved for future parallel synthesis control.")
+    parser.add_argument("--is-ssml", action="store_true", help="Treat input as SSML rather than plain text.")
+    parser.add_argument("--debug", action="store_true", help="Enable verbose logging.")
+    return parser.parse_args(argv)
 
 
-def generate():
-    client = genai.Client(
-        api_key=os.environ.get("GEMINI_API_KEY"),
+def configure_logging(debug: bool) -> None:
+    level = logging.DEBUG if debug else logging.INFO
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
     )
 
-    model = "gemini-2.5-pro-preview-tts"
-    contents = [
-        types.Content(
-            role="user",
-            parts=[
-                types.Part.from_text(text="""Expert: 안녕하세요. 오늘은 코덱스 사용방법을 팟캐스트 형식으로 깊고 넓게 풀어보겠습니다. 코딩 초심자부터 실무자까지 듣고 이해할 수 있도록, 개념부터 배포, 보안과 컴플라이언스까지 차근차근 갑니다. [잠깐 멈춤]
 
-Learner: 좋아요. 코덱스가 정확히 뭐죠? 이름만 들었어요. [잠깐 멈춤]
+def load_input_text(path: Path, encoding: str) -> str:
+    if not path.exists():
+        raise FileNotFoundError(f"Input file does not exist: {path}")
+    return path.read_text(encoding=encoding)
 
-Expert: 핵심 개념 정의부터요. 코덱스는 브라우저에서 코드 편집, 실행, 깃 연동, 배포 편의 기능을 제공하는 개발 워크스페이스입니다. 쉽게 말해, “코드 전용 협업 스튜디오”예요. [잠깐 멈춤]
 
-Learner: 비유로 설명해 주실 수 있나요? [잠깐 멈춤]"""),
-            ],
-        ),
-    ]
-    generate_content_config = types.GenerateContentConfig(
-        temperature=1,
-        response_modalities=[
-            "audio",
-        ],
-        speech_config=types.SpeechConfig(
-            multi_speaker_voice_config=types.MultiSpeakerVoiceConfig(
-                speaker_voice_configs=[
-                    types.SpeakerVoiceConfig(
-                        speaker="Learner",
-                        voice_config=types.VoiceConfig(
-                            prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                                voice_name="Zephyr"
-                            )
-                        ),
-                    ),
-                    types.SpeakerVoiceConfig(
-                        speaker="Expert",
-                        voice_config=types.VoiceConfig(
-                            prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                                voice_name="Charon"
-                            )
-                        ),
-                    ),
-                ]
-            ),
-        ),
-    )
-    audio_chunks: list[bytes] = []
-    audio_mime_type: str | None = None
-    for chunk in client.models.generate_content_stream(
-        model=model,
-        contents=contents,
-        config=generate_content_config,
-    ):
-        if (
-            chunk.candidates is None
-            or chunk.candidates[0].content is None
-            or chunk.candidates[0].content.parts is None
-        ):
-            continue
-        for part in chunk.candidates[0].content.parts:
-            if getattr(part, "inline_data", None) and part.inline_data.data:
-                inline_data = part.inline_data
-                audio_mime_type = inline_data.mime_type or audio_mime_type
-                audio_data = inline_data.data
-                if isinstance(audio_data, str):
-                    audio_data = base64.b64decode(audio_data)
-                audio_chunks.append(audio_data)
-            elif getattr(part, "text", None):
-                print(part.text)
+def create_engine(args: argparse.Namespace) -> TtsEngine:
+    engine_name = (args.engine or "").lower()
+    sample_rate = args.sample_rate
+    if engine_name in {"mock", "dummy"}:
+        return MockTtsEngine(sample_rate=sample_rate)
 
-    if not audio_chunks:
-        print("No audio data was returned by the model.")
-        return
+    if engine_name in {"polly", "aws_polly"}:
+        if not args.voice_id:
+            raise ValueError("--voice-id is required when using the Polly engine.")
+        return PollyTtsEngine(
+            voice_id=args.voice_id,
+            engine="neural",
+            language_code=args.language_code,
+            sample_rate=sample_rate,
+            output_format=args.format,
+            channels=1,
+        )
 
-    combined_audio = b"".join(audio_chunks)
-    mime_type = audio_mime_type or "audio/wav"
-    file_extension = mimetypes.guess_extension(mime_type)
-    if file_extension is None:
-        file_extension = ".wav"
-        output_bytes = convert_to_wav(combined_audio, mime_type)
+    if engine_name in {"google", "google_genai", "gemini"}:
+        api_key = args.api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_GENAI_API_KEY")
+        if not api_key:
+            raise ValueError("Google GenAI engine requires an API key (use --api-key or GEMINI_API_KEY env var).")
+        return GoogleGenAITtsEngine(
+            api_key=api_key,
+            model=args.google_model,
+            voice_name=args.voice_id,
+            sample_rate=sample_rate,
+            audio_mime_type="audio/wav" if args.format == "pcm" else f"audio/{args.format}",
+            language_code=args.language_code,
+        )
+
+    raise ValueError(f"Unsupported engine: {args.engine}")
+
+
+def build_metadata_options(args: argparse.Namespace, input_path: Path) -> dict:
+    return {
+        "input_path": input_path,
+        "target_duration_sec": args.target_duration_sec,
+        "max_duration_sec": args.max_duration_sec,
+        "silence_gap_ms": args.silence_gap_ms,
+        "engine": args.engine,
+        "voice_id": args.voice_id,
+        "language_code": args.language_code,
+        "format": args.format,
+    }
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = parse_args(argv or sys.argv[1:])
+    configure_logging(args.debug)
+
+    if args.max_duration_sec <= 0:
+        raise ValueError("--max-duration-sec must be positive.")
+    if args.target_duration_sec <= 0 or args.target_duration_sec > args.max_duration_sec:
+        logger.warning(
+            "Adjusting target duration to be within (0, max]. "
+            "Received target=%s, max=%s.",
+            args.target_duration_sec,
+            args.max_duration_sec,
+        )
+        args.target_duration_sec = min(args.max_duration_sec, max(1, args.target_duration_sec))
+
+    input_path = Path(args.input)
+    text = load_input_text(input_path, args.input_encoding)
+    is_ssml = args.is_ssml
+
+    if is_ssml:
+        sentences = [text]
     else:
-        output_bytes = combined_audio
+        sentences = split_into_sentences(text)
+    if not sentences:
+        logger.warning("No sentences found in input. Nothing to synthesize.")
+        return 0
 
-    output_name = f"generated_audio{file_extension}"
-    save_binary_file(output_name, output_bytes)
-
-def convert_to_wav(audio_data: bytes, mime_type: str) -> bytes:
-    """Generates a WAV file header for the given audio data and parameters.
-
-    Args:
-        audio_data: The raw audio data as a bytes object.
-        mime_type: Mime type of the audio data.
-
-    Returns:
-        A bytes object representing the WAV file header.
-    """
-    parameters = parse_audio_mime_type(mime_type)
-    bits_per_sample = parameters["bits_per_sample"]
-    sample_rate = parameters["rate"]
-    num_channels = 1
-    data_size = len(audio_data)
-    bytes_per_sample = bits_per_sample // 8
-    block_align = num_channels * bytes_per_sample
-    byte_rate = sample_rate * block_align
-    chunk_size = 36 + data_size  # 36 bytes for header fields before data chunk size
-
-    # http://soundfile.sapp.org/doc/WaveFormat/
-
-    header = struct.pack(
-        "<4sI4s4sIHHIIHH4sI",
-        b"RIFF",          # ChunkID
-        chunk_size,       # ChunkSize (total file size - 8 bytes)
-        b"WAVE",          # Format
-        b"fmt ",          # Subchunk1ID
-        16,               # Subchunk1Size (16 for PCM)
-        1,                # AudioFormat (1 for PCM)
-        num_channels,     # NumChannels
-        sample_rate,      # SampleRate
-        byte_rate,        # ByteRate
-        block_align,      # BlockAlign
-        bits_per_sample,  # BitsPerSample
-        b"data",          # Subchunk2ID
-        data_size         # Subchunk2Size (size of audio data)
+    engine = create_engine(args)
+    chunk_config = ChunkingConfig(
+        target_duration_ms=args.target_duration_sec * 1000,
+        max_duration_ms=args.max_duration_sec * 1000,
+        silence_gap_ms=args.silence_gap_ms,
+        sentence_pause_ms=args.sentence_pause_ms,
+        chunk_directory=Path(args.chunk_dir),
+        keep_chunks=args.keep_chunks,
+        max_retries=args.max_retries,
+        initial_retry_delay=args.retry_initial_delay,
+        retry_backoff_factor=args.retry_backoff,
     )
-    return header + audio_data
 
-def parse_audio_mime_type(mime_type: str) -> dict[str, int | None]:
-    """Parses bits per sample and rate from an audio MIME type string.
+    builder = ChunkBuilder(engine, chunk_config)
+    logger.info("Splitting text into %d sentences.", len(sentences))
+    chunk_results = builder.build_chunks(sentences)
+    if not chunk_results:
+        logger.warning("No audio chunks were produced.")
+        return 0
 
-    Assumes bits per sample is encoded like "L16" and rate as "rate=xxxxx".
+    merge_output_path = Path(args.merge_output)
+    output_format = merge_output_path.suffix.lstrip(".").lower() or "wav"
 
-    Args:
-        mime_type: The audio MIME type string (e.g., "audio/L16;rate=24000").
+    merged_segment = merge_audio_chunks(
+        chunk_results,
+        merge_output_path,
+        silence_gap_ms=args.silence_gap_ms,
+        output_format=output_format,
+    )
 
-    Returns:
-        A dictionary with "bits_per_sample" and "rate" keys. Values will be
-        integers if found, otherwise None.
-    """
-    bits_per_sample = 16
-    rate = 24000
+    metadata_builder = MetadataBuilder(
+        engine=engine,
+        config=chunk_config,
+        output_path=Path(args.metadata_output),
+    )
+    metadata = metadata_builder.build_metadata(
+        chunks=chunk_results,
+        final_segment=merged_segment,
+        final_output=merge_output_path,
+        options=build_metadata_options(args, input_path),
+    )
+    metadata_builder.write_metadata(metadata)
+    logger.info("Metadata written to %s", metadata_builder.output_path)
 
-    # Extract rate from parameters
-    parts = mime_type.split(";")
-    for param in parts: # Skip the main type part
-        param = param.strip()
-        if param.lower().startswith("rate="):
-            try:
-                rate_str = param.split("=", 1)[1]
-                rate = int(rate_str)
-            except (ValueError, IndexError):
-                # Handle cases like "rate=" with no value or non-integer value
-                pass # Keep rate as default
-        elif param.startswith("audio/L"):
-            try:
-                bits_per_sample = int(param.split("L", 1)[1])
-            except (ValueError, IndexError):
-                pass # Keep bits_per_sample as default if conversion fails
+    if not args.keep_chunks:
+        _cleanup_chunks(chunk_results)
 
-    return {"bits_per_sample": bits_per_sample, "rate": rate}
+    logger.info("Synthesis complete. Final audio saved to %s", merge_output_path)
+    return 0
+
+
+def _cleanup_chunks(chunks: Sequence[ChunkResult]) -> None:
+    for chunk in chunks:
+        try:
+            chunk.file_path.unlink(missing_ok=True)
+        except Exception as exc:  # pragma: no cover - best effort
+            logger.warning("Failed to delete chunk %s: %s", chunk.file_path, exc)
 
 
 if __name__ == "__main__":
-    generate()
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        logger.error("Interrupted by user.")
+        sys.exit(1)
+    except Exception as exc:
+        logger.exception("Fatal error: %s", exc)
+        sys.exit(1)

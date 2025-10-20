@@ -1,0 +1,118 @@
+Expert: 자, 오늘은 우리가 클라우드 네이티브 환경에서 꼭 이해해야 할 핵심 개념인 GitOps 기반 CI/CD 자동화에 대해 이야기해 보자. [잠깐 멈춤] GitOps는 단순한 배포 기술이 아니라, 운영 방식의 혁신이라고 할 수 있지. 코드를 통해 인프라와 애플리케이션의 상태를 선언하고, 이를 자동으로 동기화해 주는 방식이야.
+Learner: 선생님, 그럼 GitOps는 DevOps랑 다른 건가요? 이름이 비슷해서 헷갈려요.
+Expert: 아주 좋은 질문이야. DevOps가 **개발(Dev)**과 **운영(Ops)**의 협업 문화를 강조했다면, GitOps는 그 철학을 한 단계 더 구체화한 운영 구현 방식이야. 모든 변경 사항을 Git에 기록하고, 이 Git이 시스템의 **단일 진실 소스(Single Source of Truth)**가 되는 거지.
+Learner: 아, 그러니까 Git에 기록된 내용이 실제 클러스터에 자동으로 반영되는 구조군요?
+Expert: 맞아. 바로 그 자동 반영 과정을 CI/CD 파이프라인이 담당하지. [잠깐 멈춤] 오늘 우리가 다룰 내용은 세 부분이야.
+첫째, GitOps와 CI/CD 개념의 통합 구조.
+둘째, GitHub Actions를 통한 CI(지속적 통합) 파이프라인 구축.
+셋째, ArgoCD를 통한 CD(지속적 배포) 자동화야.
+
+Expert: 우선 GitOps의 핵심 개념부터 정리하자.
+GitOps란 “Git을 기반으로 한 선언적 인프라 관리 및 배포 자동화 방식”이야. 쉽게 말해, Git 리포지토리가 곧 운영 지휘본부가 되는 구조지.
+Learner: 음, 선언적이라는 말은 Terraform처럼 ‘이 상태로 만들어라’라고 명시하는 거죠?
+Expert: 정확해. 예를 들어, Kubernetes 클러스터 안에 Nginx 서비스가 있어야 한다면, YAML로 그 상태를 선언하고 Git에 커밋해. ArgoCD는 Git의 변경을 감지해서 실제 클러스터 상태를 그 선언된 상태와 동기화해.
+Learner: 그럼 GitOps는 결국 Kubernetes 환경에서 제일 잘 쓰이겠네요?
+Expert: 그렇지. GitOps는 클라우드 네이티브 환경, 특히 Kubernetes 기반의 마이크로서비스 아키텍처에 가장 적합해. Git에 저장된 선언적 매니페스트가 곧 시스템의 진실이 되기 때문이야.
+
+Expert: 이제 비유를 들어볼까?
+GitOps를 자동 조종 시스템이 달린 항공기라고 생각해 보자. 조종사(Git)가 비행 경로를 수정하면, 자동 조종 장치(ArgoCD)가 그 정보를 읽고 즉시 비행 경로를 맞추는 거야. 만약 엔진 하나가 꺼졌다면? 자동 조종 장치가 즉시 상태를 재조정하겠지. 이게 바로 GitOps의 강점이야 — 자가 복원(Self-healing) 과 지속적 일관성.
+
+Learner: 그럼 이런 방식은 언제부터 쓰이기 시작했나요?
+Expert: 역사는 의외로 짧아. 2017년에 Weaveworks가 GitOps 개념을 정식으로 제시했어. DevOps 문화가 퍼지던 시기였지. 당시엔 CI/CD가 코드 배포까진 자동화했지만, 운영 상태를 선언적으로 관리하는 건 부족했어. GitOps는 그 공백을 메꾼 거야.
+
+Learner: 그럼 장점은 확실하겠네요?
+Expert: 맞아.
+
+감사(Audit) — 모든 변경이 Git commit으로 남으니까 변경 추적이 명확하지.
+
+롤백(Rollback) — 문제가 생기면 Git에서 이전 커밋으로 되돌리면 끝.
+
+자동 복원(Self-healing) — 선언된 상태와 실제 상태가 달라지면 자동으로 수정.
+
+보안성 — 사람이 직접 kubectl로 조작하지 않아, Git과 CD 툴이 승인된 방식으로만 배포하거든.
+
+Learner: 단점은 없을까요?
+Expert: 물론 있지.
+
+첫째, 초기 설계 복잡도. Git 브랜치 전략, 권한 설계, Secret 관리가 까다로워.
+
+둘째, 동기화 충돌. 두 팀이 같은 리소스를 동시에 수정하면 Git 기준이 꼬일 수 있지.
+
+셋째, 운영 가시성. 자동화가 잘못되면 원인을 추적하기 어렵다.
+그래서 GitOps 환경에서는 Observability(관측성) 툴, 예를 들어 Prometheus, Grafana, Loki 같은 모니터링 체계를 필수로 둬야 해.
+
+Learner: 이제 CI/CD 얘기로 넘어가죠. CI부터 설명해주세요.
+Expert: 좋아. CI, 즉 Continuous Integration(지속적 통합) 은 개발자들의 코드 변경을 자동으로 통합하고 테스트하는 프로세스야. GitHub Actions, GitLab CI, Jenkins가 대표적인 도구들이지.
+GitHub Actions를 예로 들어 보자. Git 리포지토리에 코드가 푸시되면, 워크플로우(workflow) 파일(.github/workflows 폴더 내)이 실행돼. 여기서 빌드 → 테스트 → 보안 점검 → Docker 이미지 빌드 → ECR 푸시 같은 단계가 자동으로 돌아가는 거야.
+
+Learner: 아, 이게 CI 단계군요. CD는 그다음이겠네요?
+Expert: 그렇지. CD는 두 가지 의미가 있어 — Continuous Delivery(지속적 제공) 와 Continuous Deployment(지속적 배포).
+첫 번째는 운영 전까지 자동화하는 수준이고,
+두 번째는 운영 환경까지 자동 배포하는 걸 말하지. GitOps에선 ArgoCD가 CD의 핵심 역할을 해.
+
+Expert: 이제 ArgoCD로 넘어가 보자.
+ArgoCD는 Kubernetes용 GitOps CD 도구야. Git의 상태와 실제 클러스터 상태를 지속적으로 비교하고, 차이가 있으면 자동으로 동기화해.
+Learner: 구체적으로 어떻게 동작하나요?
+Expert: 단계별로 볼게.
+1단계, Git 리포지토리 등록 — ArgoCD가 감시할 리포를 지정해.
+2단계, 애플리케이션 정의 — 어떤 네임스페이스, 어떤 매니페스트를 쓸지 명시.
+3단계, 동기화(Sync) — Git의 선언 상태를 클러스터에 반영.
+4단계, 상태 모니터링 — Drift(편차)가 생기면 자동 복원.
+
+Learner: 아, 그럼 사람이 kubectl로 배포 안 해도 되네요?
+Expert: 바로 그거야. 사람이 직접 명령어를 칠 필요 없이, Git에 commit만 하면 ArgoCD가 나머지를 처리해.
+
+Learner: 그런데 이런 자동화 과정에서도 보안이 중요하겠죠?
+Expert: 물론이지. GitOps에서 가장 중요한 보안 포인트는 인증과 무결성이야.
+
+첫째, Git 리포 접근 제어 — branch 보호, PR 승인 정책, GPG 서명으로 코드 무결성 확보.
+
+둘째, ArgoCD 서비스 계정 최소권한화 — 원칙적으로 least privilege 원칙 적용.
+
+셋째, Secret 관리 — Git에 평문 Secret을 올리면 안 돼. SOPS나 AWS Secrets Manager, KMS 연동을 반드시 써야 해.
+NIST CSF 기준으로는 “Protect – PR.AC(접근통제)” 와 “Detect – DE.CM(모니터링)” 범주에 해당해.
+
+Learner: 만약 누군가 Git 리포를 변조하거나 잘못된 코드를 넣으면요?
+Expert: 좋은 포인트야. 그래서 GitOps 환경에선 서명된 커밋(GPG commit signing) 과 정책 기반 승인(Pull Request Policy) 이 필수야. 또, ArgoCD의 Sync 권한을 특정 역할만 갖도록 RBAC을 설정해야 하지.
+
+Expert: 실무에서 한 가지 예를 들어보자.
+금융권 클라우드 시스템에서, GitHub Actions → ArgoCD → EKS 파이프라인을 구축했다고 하자.
+CI 단계에선 코드 정적 분석(SonarQube), 취약점 검사(Trivy), 컨테이너 이미지 서명(Cosign)을 자동화해.
+CD 단계에서는 ArgoCD가 승인된 커밋만 EKS에 반영하고, 결과를 Slack으로 알림 보내지.
+이런 구조면 배포 승인, 변경 이력, 코드 감사까지 한 번에 확보돼.
+GDPR, ISMS-P 관점에서도 “변경 이력 관리”와 “접근 통제” 항목을 만족시킬 수 있지.
+
+Learner: 그럼 GitOps는 결국 보안과 운영을 동시에 강화하는 거네요?
+Expert: 정확히 짚었어. GitOps의 진짜 강점은 신뢰할 수 있는 자동화야.
+사람이 직접 배포할 때 생기는 휴먼 에러를 제거하고, 감사 추적(Audit Trail)을 자동으로 남기지.
+또, 재해복구 시점에도 Git 리포를 기준으로 인프라와 애플리케이션을 복원할 수 있어.
+즉, Git이 곧 복구 시점의 백업이 되는 셈이지.
+
+Learner: 혹시 이런 구조를 처음 설계할 때 흔히 하는 실수는 뭔가요?
+Expert: 가장 흔한 세 가지가 있어.
+첫째, Git 브랜치 전략 미비 — 운영(main)과 스테이징(dev)이 혼재돼 버리면 자동 배포가 꼬여.
+둘째, Secret을 평문으로 커밋 — 실무에서 가장 많이 터지는 사고야.
+셋째, ArgoCD의 권한 과다 부여 — “관리자 편하라고” cluster-admin을 통째로 주면 큰일 나지.
+그래서 나는 항상 “GitOps는 자동화 이전에 보안 설계부터”라고 강조해.
+
+Expert: 자, 이제 우리가 배운 내용을 정리해 보자. [잠깐 멈춤]
+GitOps는 Git을 단일 진실 소스로 삼아 코드, 인프라, 운영 상태를 모두 선언적으로 관리하는 방식이다.
+CI/CD는 이 구조에서 핵심 파이프라인 역할을 하며,
+GitHub Actions는 코드 통합과 테스트 자동화(CI),
+ArgoCD는 운영 환경 배포 자동화(CD) 를 담당한다.
+
+Learner: 그러니까 GitHub Actions는 개발 쪽, ArgoCD는 운영 쪽 자동화를 맡는 거네요.
+Expert: 맞아. 그리고 이 둘을 연결하는 게 바로 GitOps의 진짜 힘이지.
+보안적으로는 IAM 최소 권한, GPG 서명, Secret 암호화, RBAC 설계가 필수고,
+컴플라이언스 측면에서는 ISMS-P의 변경관리 통제와 접근통제 항목을 충족한다.
+
+Expert: 마지막으로 조언 하나.
+GitOps는 단순히 배포를 빠르게 만드는 기술이 아니야.
+“운영을 코드처럼 관리하고, 자동화된 보안을 구현하는 철학” 이라고 생각해야 해.
+CI/CD 파이프라인은 도구에 불과하고, 진짜 핵심은 일관성과 검증된 신뢰 체계를 만드는 데 있어.
+
+Learner: 네, 오늘 들으니까 GitOps가 단순히 DevOps의 확장이 아니라
+운영 보안과 품질을 동시에 보장하는 시스템이라는 걸 알겠어요.
+Expert: 아주 잘 정리했어. [잠깐 멈춤]
+다음 시간엔 ArgoCD의 Sync 전략과 Helm, Kustomize 통합 방식까지 실제 YAML 예제로 살펴보자.
+오늘은 여기까지 하자.
